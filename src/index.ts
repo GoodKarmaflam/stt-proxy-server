@@ -69,11 +69,26 @@ wss.on("connection", (ws: WebSocket) => {
 
     let recognizeStream: ReturnType<typeof createRecognizeStream> | null = null;
     let silenceInterval: NodeJS.Timeout | null = null;
+    let streamRestartTimeout: NodeJS.Timeout | null = null;
     let lastAudioTime = Date.now();
+
+    // Limit stream to 290 seconds (Google's max is 305s) to avoid ungraceful disconnects
+    const STREAMING_LIMIT_MS = 290 * 1000;
 
     function getOrCreateStream() {
         if (!recognizeStream || recognizeStream.destroyed) {
             recognizeStream = createRecognizeStream(ws);
+
+            // Restart timer for endless streaming
+            if (streamRestartTimeout) clearTimeout(streamRestartTimeout);
+            streamRestartTimeout = setTimeout(() => {
+                console.log("[Proxy] 290s limit reached. Seamlessly restarting gRPC stream.");
+                if (recognizeStream && !recognizeStream.destroyed) {
+                    recognizeStream.end();
+                }
+                recognizeStream = null;
+                getOrCreateStream(); // Spin up new stream immediately
+            }, STREAMING_LIMIT_MS);
         }
         return recognizeStream;
     }
@@ -92,10 +107,14 @@ wss.on("connection", (ws: WebSocket) => {
         }, 1000);
     }
 
-    function stopSilenceGenerator() {
+    function stopTimers() {
         if (silenceInterval) {
             clearInterval(silenceInterval);
             silenceInterval = null;
+        }
+        if (streamRestartTimeout) {
+            clearTimeout(streamRestartTimeout);
+            streamRestartTimeout = null;
         }
     }
 
@@ -112,10 +131,10 @@ wss.on("connection", (ws: WebSocket) => {
                     console.log("[Proxy] Commit received — flushing gRPC stream");
                     if (recognizeStream && !recognizeStream.destroyed) recognizeStream.end();
                     recognizeStream = null;
-                    // We DO NOT stop the silence generator here. The next time the interval
-                    // fires (if they haven't started talking), it will call getOrCreateStream()
-                    // internally when it tries to write, which spins up a fresh stream immediately
-                    // so it's warm when they actually talk.
+                    if (streamRestartTimeout) {
+                        clearTimeout(streamRestartTimeout);
+                        streamRestartTimeout = null;
+                    }
                     getOrCreateStream(); // eagerly recreate so it's warm
                 }
             } catch (_) { }
@@ -140,13 +159,13 @@ wss.on("connection", (ws: WebSocket) => {
 
     ws.on("close", (code: number, reason: Buffer) => {
         console.log(`[Proxy] Browser disconnected — code: ${code}, reason: ${reason.toString() || "none"}`);
-        stopSilenceGenerator();
+        stopTimers();
         if (recognizeStream && !recognizeStream.destroyed) recognizeStream.end();
     });
 
     ws.on("error", (err: Error) => {
         console.error("[Proxy] WebSocket error:", err.message);
-        stopSilenceGenerator();
+        stopTimers();
         if (recognizeStream && !recognizeStream.destroyed) recognizeStream.end();
     });
 });
