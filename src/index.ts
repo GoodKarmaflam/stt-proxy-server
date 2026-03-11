@@ -61,7 +61,7 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 server.listen(PORT, () => {
-    console.log(`[Proxy] Listening on port ${PORT}`);
+    console.log(`[Proxy] Updated Listening on port ${PORT}`);
 });
 
 wss.on("connection", (ws: WebSocket) => {
